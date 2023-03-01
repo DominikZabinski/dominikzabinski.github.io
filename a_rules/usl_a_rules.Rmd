@@ -1,0 +1,322 @@
+---
+title: "Unsupervised Learning Winter 2022/2023 - Association rules"
+subtitle: "Recipes"
+author: "306068 Dominik Żabiński"
+output: 
+    html_document:
+        toc: true
+        toc_depth: 2
+        toc_float: true
+---
+
+```{r kntir_setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r libraries, include=FALSE}
+library(data.table)
+library(ggplot2)
+library(arules)
+library(arulesViz)
+```
+
+# Introduction 
+
+Association analysis is associated either with purchasing analysis or purchasing analysis. I decided to check whether it is possible to analyze something yummier - recipes.
+
+Main question is this: are the recipes are as predictable as one might think?
+
+# Data
+
+Data comes from https://www.kaggle.com/datasets/shuyangli94/food-com-recipes-and-user-interactions. As stated:
+    
+    This dataset consists of 180K+ recipes
+    
+In the first step, process the aforementioned set. It was limited to 20,000. recipes, and the ingredients contained in them have undergone some processing. The code to prepare the collection downloaded from the indicated page is below.
+
+```{r data-setup}
+# library(data.table)
+# raw <- data.table(read.csv(file = "RAW_recipes.csv", stringsAsFactors = F, nrows = 20000))
+# dataRec <- data.table(recipe = raw$ingredients)
+# # ingredients are stated as tuples in form: ['itemA, itemB']
+# dataRec[, recipe := substr(recipe, 3, nchar(recipe) - 2)]
+# # replacing separatro for simpler one
+# dataRec[, recipe := gsub(pattern = "', '", replacement = ",", x = recipe, fixed = T)]
+# # getting rid of quotation marks and apostrophes
+# dataRec[, recipe := gsub(pattern = "'", replacement = "", x = recipe, fixed = T)]
+# dataRec[, recipe := gsub(pattern = '"', replacement = "", x = recipe, fixed = T)]
+# # there is weird convention for including juice i.e. lemon, juice of - getting rid of it
+# dataRec[, recipe := gsub(pattern = ', juice of', replacement = "", x = recipe, fixed = T)]
+# 
+# write.csv(x = dataRec, file = "recipe.csv", row.names = F, quote = FALSE)
+```
+
+```{r data-final}
+recipes <- arules::read.transactions(file = "data/recipe.csv", sep = ",", header = T)
+```
+
+# Primary analysis
+
+Lets look at basics.
+
+```{r prim-dense}
+recSumm <- summary(recipes)
+recSumm@density
+```
+
+The dataset is not very dense - if represented by sparse matrix, only 0.13% of it would be covered.
+
+```{r prim-item}
+recSumm@itemSummary
+```
+
+Most common ingredients are salt, butter, sugar, eggs and onion (unexpectedly, my money's on flour). We could use `itemFrequencyPlot` function to look at absolute (or relative) frequency of the ingredients.
+
+```{r prim-freq1}
+itemFrequencyPlot(recipes, topN=10, type="absolute", main="Item Frequency") 
+```
+
+```{r prim-freq2}
+itemFrequencyPlot(recipes, topN=10, type="relative", main="Item Frequency") 
+```
+
+As we can see in top 10 items are also **water**, **olive oil**, **milk**, **flour** and **brown sugar**
+
+```{r prim-length}
+recSumm@lengthSummary
+```
+
+50% of recipes contains between 6 and 11 ingredients. There are some complex recipes (43 ingredients) and some basic (one ingredient recipe?). Look at the distribution.
+
+```{r}
+ggplot(data = data.table(m = as.numeric(names(recSumm@lengths)), v = unname(recSumm@lengths))) + 
+    geom_col(aes(x = m, y  =v.N)) + 
+    theme_minimal() +
+    labs(x = "Number of ingredients", y = "Number of recipes")
+```
+
+# Association rules - basics 
+
+Using the apriori algorithm I will try to find some association rules. Starting with support at minimum of 6% and confidence of minimum 25%.
+
+```{r arules-basics}
+recipeRules <- apriori(recipes, parameter = list(support = 0.06, confidence = 0.25, minlen = 2))
+summary(recipeRules)
+```
+
+Maximum support is 11%, maximum confidence 77% (pretty high).
+
+Inspect rules more carefully. First, look by count.
+
+```{r arules-count}
+inspect(sort(recipeRules, by = "count")[1:10])
+```
+
+Most common are rules containing **salt** and **sugar**. This is quite obvious since we established that the dataset probably contains mostly recipes for cakes and pastries.
+
+Another way of inspecting a association rules is to look at lift statistic.
+
+```{r arules-lift}
+inspect(sort(recipeRules, by = "lift")[1:10])
+```
+
+**Flour** and **butter**, **baking powder** and **salt** - sounds like pastries.
+
+Combination of **pepper** and **salt** is also high in term fo lift. 'season to taste' phrase is common in recipes.
+
+Another way of inspecting rules is looking at support level.
+
+```{r arules-support}
+inspect(sort(recipeRules, by = "support")[1:10])
+```
+
+Most popular combinations in this set of rules are **butter** with **salt** and **salt** with **sugar**. 
+
+# Onion as a metaphor for the layering of association rules
+
+Basic analysis of the dataset revealed that we are dealing with cake recipes (or something similar). One of the items stood out - onion. What kind of rules we can make with this ingredient? Since first attempt gave us onyl 18 rules we will lower minimum support from 6% to 1% to create broader set of rules, but with special interest in **onion**. At first, find out what 'triggers' including onion into recipe.
+
+```{r onion-rules}
+onionRules <- apriori(data=recipes, parameter=list(supp = 0.01, conf = 0.005, minlen = 2), appearance=list(default = "lhs", rhs = "onion"), control=list(verbose=F)) 
+onionRules
+```
+
+33 rules including this vegetable. What about those rules, lets look at confidence values:
+
+```{r onion-conf}
+inspect(head(sort(onionRules, by="confidence", decreasing=TRUE)))
+```
+
+**Ground beef**, **celery**, **ketchup** - nothing for the sweet tooth. Maybe try differently - what else will people add if already added onion to the recipe?
+
+```{r onion-rules2}
+onionRules2 <- apriori(data = recipes, parameter = list(supp = 0.01, conf = 0.005, minlen = 2), appearance = list(default = "rhs", lhs = "onion"), control = list(verbose = F)) 
+onionRules2
+```
+
+Nearly 30 rules. Again, look at the rules with higher confidence values.
+
+```{r onion-conf2}
+inspect(head(sort(onionRules2, by="confidence", decreasing=TRUE)))
+```
+
+**salt**, **garlic cloves**, **olive oil** sound about right but **water** is odd.
+
+# Graphical analysis
+
+To perform graphical analysis first we create more rules by lowering minimal support level (to 0.6%).
+
+```{r graph-set}
+recipeRules2 <- apriori(recipes, parameter = list(support = 0.006, confidence = 0.25, minlen = 2))
+recipeRules2
+```
+
+That would leave us with 2363 rules. Lets plot 500 of them.
+
+```{r graph-scat}
+plot(recipeRules2[1:500])
+```
+
+There are some rules with confidence (over 80%) but very low support level. Next we look at lift level (with the use of 'matrix' method). 
+
+```{r graph-lift}
+plot(recipeRules2[1:500], method = "matrix", measure = "lift")
+```
+
+There are few rules with lift over 10 which is quite promising. Looking at both support and lif (graph below) we can spot some rules with both high confidence and lift.
+
+```{r graph-conf-lift}
+plot(recipeRules2[1:500], measure = c("support", "lift"), shading = "confidence")
+```
+
+Looking at grouped graph we can spot several interesting rules:
+
+* **onion powder** and **garlic powder**
+* **ground nutmeg** with **ground cinnammon**
+* **worcestershire sauce** and **ketchup**
+
+```{r graph-grouped}
+plot(recipeRules2[1:500], method = "grouped") 
+```
+
+Using parallel coordinates plot and network plot we can spot that:
+
+* **ketchup** and **worcestershire sauce** are close with **sesame oil**, **soy sauce** and **ginger**
+* condiments (**cilantro**, **ground nutmeg**) are in the center of the rules
+
+```{r graph-paracord}
+plot(recipeRules2[1:100], method = "paracoord", control = list(reorder = TRUE))
+```
+
+```{r graph-graph}
+plot(recipeRules2[1:100], method = "graph")
+```
+
+# Banana as the example of step-by-step approach
+
+In this part will be presented step-by-step approach to association rules analysis. We will use low support rules to have something to work with.
+
+## What is the cause / consequence of a given igredient?
+
+What leads to putting the banana into the recipe? 
+
+```{r banana-rhs}
+rules.banana <- apriori(data=recipes, parameter=list(supp = 0.001,conf = 0.08, minlen = 2), appearance=list(default="lhs", rhs="banana"), control=list(verbose=F)) 
+
+rules.banana.byconf <- sort(rules.banana, by="confidence", decreasing=TRUE)
+inspect(head(rules.banana.byconf))
+```
+
+**Pecans**, **salt**, **baking powder** - all are probably part of dish similar to pecan pie. Seeing **ice** is something I could not quite understand.
+
+What is the result of adding a banana?
+
+```{r banana-lhs}
+rules.banana <- apriori(data=recipes, parameter = list(supp = 0.001, conf = 0.08, minlen = 2), appearance=list(default="rhs",lhs="banana"), control=list(verbose=F)) 
+
+rules.banana.byconf<-sort(rules.banana, by="confidence", decreasing=TRUE)
+inspect(head(rules.banana.byconf))
+```
+
+Apparently adding a *banana* to the recipe results in adding *salt*, *sugar*, *baking powder/soda*, *eggs* or *butter* (at least that are the ingredients we are most confident about)
+
+## Sets
+
+Finding out closed (frequent) sets is useful part of association rules analysis.
+
+```{r sets}
+trans1.closed<-apriori(recipes, parameter=list(target="closed frequent itemsets", support=0.025, minlen = 2))
+
+inspect(trans1.closed)
+
+is.closed(trans1.closed)  
+
+freq.closed<-eclat(recipes, parameter=list(supp=0.15, maxlen=15, target="closed frequent itemsets"))
+
+inspect(freq.closed)
+
+is.closed(freq.closed)
+
+freq.max<-eclat(recipes, parameter=list(supp=0.15, maxlen=15, target="maximally frequent itemsets"))
+
+inspect(freq.max)
+```
+
+## Are the rules significant?
+
+Significance of a rule might tell us whether to use this rules in further analysis.
+
+```{r ban-signif}
+is.significant(rules.banana, recipes)    
+```
+
+Most of the rules about **banana** are significant.
+
+## Are those sets maximal?
+
+```{r}
+is.maximal(rules.banana) 
+inspect(rules.banana[is.maximal(rules.banana)==TRUE]) 
+```
+
+All of the sets are maximal. 
+
+## Are those rules redundant?
+
+The rule is redundant if there is a more general one with the same or higher confidence value.
+
+```{r banana-red}
+is.redundant(rules.banana)
+```
+
+None of the rules is redundant.
+
+# Similarity and dissimilarity measures
+
+I will use Jaccard Index to analyse dissimilarity (only ingredients that appeared in no less than 5% of recipes). 
+
+```{r jaccard}
+trans.sel<-recipes[,itemFrequency(recipes)>0.05]
+d.jac.i<-dissimilarity(trans.sel, which="items")
+round(d.jac.i,2) 
+```
+
+For example, **bacon** and **all-purpose flour** are very different - they do not overlap in 98% of the recipes.
+
+Another approach is to show this results using dendrogram. One can see how closely th **garlic cloves** are with **olive oil** and how dissimilar are from **baking-soda**, **baking-powder** and **all-purpose flour** (witch makes sense, unless one is making pizza).
+
+```{r dendro}
+plot(hclust(d = d.jac.i, method = "ward.D2"), main = "Dendrogram for items")
+```
+
+# Summary
+
+Association rules analysis is useful not only at finding out what customers will buy next but also at analysing ordinary stuff like recipes. The above analysis could benefit from thorough cleaning up dataset i.e. replacing specific ingredients with more general names.
+
+There were some interesting observations i.e.:
+
+* condiments are related to each other
+* baking soda is exchangeable with baking powder
+* ground nutmeg works great with ground cinnamon.
+
+Going back to the main question: there were couple things (like **banana** and **ice cubes**) that were a big surprise but in the end the results were quite predictable.
