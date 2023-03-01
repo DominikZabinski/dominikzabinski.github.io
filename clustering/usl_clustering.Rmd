@@ -1,0 +1,513 @@
+---
+title: "Unsupervised Learning Winter 2022/2023 - Clustering"
+subtitle: "Deprivation in Poland"
+author: "306068 Dominik Żabiński"
+output: 
+    html_document:
+        toc: true
+        toc_depth: 2
+        toc_float: true
+---
+
+```{r kntir_setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r libraries, include=FALSE}
+library(data.table)
+library(ggplot2)
+library(ClusterR)
+library(factoextra)
+library(flexclust)
+library(clustertend)
+library(fpc)
+library(sf)
+set.seed(306068)
+```
+
+```{css, echo=FALSE}
+.cc:before {
+  content: '\2713';
+  display: inline-block;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: green;
+  padding: 0 6px 0 0;
+}
+
+.ncc:before {
+  content: '\2718';
+  display: inline-block;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: red;
+  padding: 0 6px 0 0;
+}
+```
+
+# Introduction 
+
+Deprivation refers to a state of lacking in basic needs or resources that are necessary for a healthy and fulfilling life. It can be caused by various factors, such as poverty, discrimination, or social exclusion. Deprivation can have negative effects on physical, psychological, and social well-being, leading to health problems, low self-esteem, and social isolation. Addressing deprivation requires efforts to address the underlying causes and provide access to essential resources and opportunities.
+
+Simplest way of measuring deprivation requires data about 5 dimensions:
+
+* income
+* employment
+* quality of life
+* education
+* access to goods and services
+
+Based on the data from Local Data Bank (*Bank Danych Lokalnych*) and applying clustering methods I will try to answer to main questions:
+
+1. Is it true that people in big cities have better lives, better opportunities than people in so called province?
+
+2. Is it true that after so many years after Poland regained independence, the partitions are still visible (*pl - czy widać zabory*)?
+
+# Data
+
+Data comes from Local Data Bank and refers to values from 2021 (if not stated otherwise). I have tried to follow Smętkowski et al. and create a dataset that would contain 19 variables split into 5 domains. I will quote the definition of each of the variables and briefly describe whether I managed to recreate Smętkowski's concept.
+
+## Income
+
+* <p class='cc'>own income of communes and cities with district rights constituting a share in personal income tax per capita - last data for this indicator comes from 2016</p>
+* <p class='ncc'>the amount of remuneration in business entities employing more than nine employees - last data for this indicator comes from 2016 and there was no data about cities with district rights</p>
+* <p class='ncc'>percentage of families with three or more children aged up to 24 - I could not find proper data</p>
+* <p class='cc'>beneficiaries of environmental social assistance per 10,000 population - it is a indicator with ID P3870</p>
+* <p class='ncc'>percentage of dwellings with rent arrears of more than three months in relation to the total number of dwellings - I could not find proper data</p>
+
+I have found 2 out of 5 suggested indicators that describes income domain.
+
+## Employment
+    
+* <p class='cc'>registered unemployment rate - it is a indicator with ID P2392</p>
+* <p class='ncc'>percentage of long-term unemployed - this type of data is only available at voivodeship level</p>
+* <p class='ncc'>working in the agricultural sector per 100 hectares of agricultural land - I could not find proper data</p>
+* <p class='ncc'>working outside agriculture in entities employing more than nine people per 100 inhabitants - I could not find proper data</p>
+
+I have found 1 out of 4 suggested indicators that describes employment domain.
+
+## Quality of life
+
+* <p class='cc'>number of people per 1 living room - it is the part of indicator with ID P2430</p>
+* <p class='ncc'>percentage of flats equipped with a bathroom - I could not find proper data</p>
+* <p class='cc'>dust emissions from particularly onerous plants per 1 km2 - it is the part of indicator with ID P1649</p>
+* <p class='cc'>percentage of the population using sewage treatment plants - it is the part of indicator with ID P2433</p>
+
+I have found 3 out of 4 suggested indicators that describes employment domain.
+
+## Education
+
+* <p class='ncc'>percentage of people with at most primary education (including no education) - I could not find proper data</p>
+* <p class='cc'>average result of the lower secondary school exam in the mathematics and natural sciences part - values come from https://mapa.wyniki.edu.pl/MapaEgzaminow/</p>
+* <p class='ncc'>using public libraries per 1,000 inhabitants - the publication of this indicator was stopped in 2016</p>
+
+I have found 1 out of 3 suggested indicators that describes education domain.
+
+## Access to goods and services
+
+* <p class='cc'>number of people per apartment - it is the part of indicator with ID P2430</p>
+* <p class='cc'>percentage of children covered by pre-school education - I chose the part of the indicator with ID P4013 which corresponds to all children in the age between 3 and 6</p>
+* <p class='cc'>number of doctors and dentists per 10,000 inhabitants - it is indicator with ID P3173</p>
+* <p class='cc'>population to a public pharmacy  - it is indicator with ID P2434</p>
+
+I have found 4 out of 4 suggested indicators that describes employment domain.
+
+All in all I have managed to gather data about 11 out fo 19 indicators chosen by Smętkowski. All of the indicators refers to district level. To make up for the spatial aspect of the problem, I have added centroids of the districts as the additional variables. In the end, final dataset consist of 13 variable and 380 observations.
+
+```{r data-prep}
+indicators <- list(
+  IN_more9 = "WYNA_2497",
+  IN_ben = "OCHR_3870",
+  
+  EM_reg_unempl = "RYNE_2392",
+  
+  QL_people_per_lr = "GOSP_2430_b",
+  QL_dust = "STAN_1649",
+  QL_sew = "GOSP_2433",
+  
+  ED_science = "EDU_WYN",
+  
+  GS_children_pre = "WYCH_4013",
+  GS_doctors = "OCHR_3173",
+  GS_pharmacies = "OCHR_2434",
+  GS_people_per_ap = "GOSP_2430_a"
+)
+allDataFiles <- list.files("data/")
+dataAll <- rbindlist(
+    l = lapply(
+        X = names(indicators),
+        FUN = function(i)
+        {
+            pp <- which(substr(allDataFiles, 1, nchar(indicators[[i]])) == indicators[[i]])
+            res <- data.table(read.csv2(file = paste0("data/", allDataFiles[pp])))
+            res[, ind := i]
+            return(subset(res, select = c("Kod", "Wartosc", "ind")))
+        }
+    )
+)
+dataAll <- dcast(data = dataAll, formula = Kod ~ ind, value.var = "Wartosc")
+dataAll[, Kod := substr(sprintf("%07d", as.numeric(Kod)), 1, 4)]
+# adding centroids
+load(file = "data/shapes_powiaty.rda")
+geoms <- sf::st_centroid(shapes_powiaty)$geometry
+coords <- rbindlist(l = lapply(X = 1:length(geoms), FUN = function(i) data.table(xaxis = geoms[[i]][1], yaxis = geoms[[i]][2], Kod = shapes_powiaty$JPT_KOD_JE[i])))
+dataAll <- merge(coords, dataAll, by = "Kod")
+finalVar <- setdiff(names(dataAll), "Kod")
+head(dataAll)
+```
+
+# Primary analysis
+
+The basic analysis involved checking the distributions of variables using a **summary()** ...
+
+```{r}
+summary(subset(dataAll, select= names(indicators)))
+```
+
+... and with the help of boxplots.
+
+```{r}
+indicValues <- melt(data = subset(dataAll, select= c("Kod", names(indicators))), id.vars = "Kod")
+ggplot(data = indicValues) + 
+  geom_boxplot(mapping = aes(x = value)) + 
+  facet_wrap(~variable, scales = "free") + 
+  theme_minimal()
+```
+
+Main insights: 
+
+* registered unemployment rate (*EM_reg_unempl*) varies between 5% and 10%, but there are districts with 20% and more
+* in most districts there are between 2.5 and 3 people per apartment (*GS_people_per_ap*)
+* percentage of children covered by pre-school education is sometimes higher than 100% (*GS_children_pre*) - according to the definition of this indicator the percentege is a result of dividing the number of children in kindergartens located in given district by the number of all children in that district. That means that migration is not taken into account
+* there are some extreme outliers in terms of beneficiaries of environmental social assistance per 10,000 population (*IN_ben*), number people per pharmacy (*GS_pharmacies*) or  percentage of the population using sewage treatment plants (*QL_sew*)
+* there are missing values in dust emissions from particularly onerous plants per 1km2 (*QL_dust*) - it might indicates that in that district there is no such plant
+
+To perform clustering analysis first we need to clean up dataset. First, I will change all the values of *GS_children_pre* that are over 100% to 100%. 
+
+```{r data-clean-children}
+dataAll[GS_children_pre > 100, GS_children_pre  := 100]
+```
+
+Next step is to replace missing values for *QL_dust*
+
+```{r data-clean-dust}
+dataAll[is.na(QL_dust), QL_dust  := 0]
+```
+
+Final step is to standardize the variables.
+
+```{r data-stand}
+dataAllZ <- as.data.frame(lapply(subset(dataAll, select= finalVar), scale))
+```
+
+# Clustering - choosing the optimal number of clusters
+
+In the first step, we will find the optimal number of clusters. We will do this by using the silhouette coefficient for various clustering methods:
+
+* k-means
+* PAM
+* CLARA
+* hierarchical
+
+```{r, echo=FALSE}
+minC <- 2
+maxC <- 10
+vecC <- minC:maxC
+```
+
+Each of the methods will be applied for the number of clusters from `r minC` to `r maxC`. The number of clusters with the highest silhouette value will be chosen as the optimal.
+
+## K-means
+
+To find optimal number of cluster for k-means method we will use ClusterR::Optimal_Clusters_KMeans function. This allows us to plot the results.
+
+```{r opt-kmeans}
+resKMeans <- Optimal_Clusters_KMeans(data = dataAllZ, max_clusters = maxC, plot_clusters = TRUE, criterion = "silhouette")
+```
+
+Using k-means method and silhouette value we establish that optimal number of clusters is equal to 3.
+
+## PAM
+
+To find optimal number of clusters with PAM (partition around medoids) algorithm we need to use factoextra::eclust function (since CLusterR::Optimal_Clusters_Medoids function requires response from the user).
+
+```{r opt-pam}
+pamRes <- unlist(
+    lapply(
+        X = vecC, 
+        FUN = function(i) 
+        {
+            clara_flex <- eclust(x = dataAllZ, FUNcluster = "pam", k = i, graph = F) 
+            clara_flex$silinfo$avg.width
+            
+        }
+    )
+)
+optPAM <- vecC[which(pamRes == max(pamRes))]
+eclust(x = dataAllZ, FUNcluster = "pam", k=optPAM)
+```
+
+Also PAM algorithm indicates that the optimal number of clusters is equal to 2.
+
+## CLARA
+
+Using CLARA (Clustering Large Applications) for dataset containing 380 observations and 13 variables is kind of overkill, but we will do it just to see if it gives similar results to PAM algorithm. We will also use factoextra::eclust function.
+
+```{r opt-clara}
+ccRes <- unlist(
+    lapply(
+        X = vecC, 
+        FUN = function(i) 
+        {
+            clara_flex <- eclust(x = dataAllZ, FUNcluster = "clara", k = i, graph = F) 
+            clara_flex$silinfo$avg.width
+            
+        }
+    )
+)
+optClara <- vecC[which(ccRes == max(ccRes))]
+eclust(x = dataAllZ, FUNcluster = "clara", k=optClara)
+```
+
+CLARA algorithm suggests 3 as the optimal number of clusters.
+
+## Hierarchical Clustering
+
+We will try hierarchical clustering for the last try (using factoextra::fviz_nbclust).
+
+```{r opt-hier}
+hcRes <- fviz_nbclust(x = dataAllZ, FUN = hcut, method = "silhouette", k.max = maxC)
+optHier <- hcRes$data[order(-hcRes$data$y), ]$clusters[1]
+hcRes
+```
+
+Hierarchical Clustering algorithm also suggests 2 clusters.
+
+## Summ up
+
+2 out of 4 methods suggests 3 clusters and this is the number we will choose for further analysis.
+
+# Quality of clusterization
+
+In this section we will try to assess the quality of clusterization. We will use several measures to test whether this analysis provides useful insight.
+
+## Shadow statistics 
+
+Shadow statistics is based on the relation between observations and cluster centroids. Its value ranges from 0 to 1:
+
+* values closer to 0 mean that points are closer to centroids of clusters which means that our clustering result is of high quality.
+* values closert to 1 means that observations are to some extent equidistant to all cluster centroids which means that clustering result is poor quailty
+
+To calculate shadow statistics we will use flexclust::cclust function.
+
+```{r qual-shadow}
+optKmeans <- which(resKMeans == max(resKMeans))
+shadowStat <- cclust(x = dataAllZ, optKmeans, dist="euclidean") #:: for k-means
+shadow(shadowStat) 
+```
+
+Looking at those value this clustering is of poor quality. One can look into graph for individual clusters.
+
+```{r qual-shadowplot}
+plot(shadow(shadowStat))
+```
+
+## Hopkins statistic
+
+Hopkins statistics measures clusterability of data:
+
+* if values are uniformly distributed the statistic will be close to 0
+* if values is randomly distirbuted, the statistic will be around 0.5
+* if values are clustered, the statistic will be close to 1
+
+To calculate Hopkins statistics we will use clustertend::hopkins function. Because it is a sample-base statistic we will run it 10 times to see if the results are stable.
+
+```{r qual-hop}
+hopsRes <- unlist(lapply(X = 1:10, FUN = function(i) hopkins(X = dataAllZ)[[1]]))
+hist(hopsRes)
+```
+
+The results indicates that the values are rather randomly distributed.
+
+## Rand index
+
+```{r qual-rand}
+set.per1<-dataAllZ[,1:floor(ncol(dataAllZ) / 2)]
+set.per2<-dataAllZ[,floor(ncol(dataAllZ) / 2):ncol(dataAllZ)]
+d1<-cclust(set.per1, optKmeans, dist="euclidean")
+d2<-cclust(set.per2, optKmeans, dist="euclidean")
+comPart(d1, d2)
+```
+
+Rand index of 0.59 tells us that sometimes clustering is stable (1 means that partitioning data set do not affect result of clustering at all).
+
+## Calinski-Harabasz
+
+Calinski-Harabasz index is used for comparing solutions for alternative number of clusters. For comparison we will choose the number of clusters with second largest value of silhouette index.
+
+```{r qual-caha}
+secOptKMeans <- which(resKMeans == max(setdiff(resKMeans, max(resKMeans))))
+km1 <- kmeans(x = dataAllZ, centers = optKmeans) 
+km2 <- kmeans(x = dataAllZ, centers = secOptKMeans)
+
+round(calinhara(dataAllZ, km1$cluster),digits=2);round(calinhara(dataAllZ, km2$cluster),digits=2)
+```
+
+Since higher value of Calinski-Harabasz index means better result therefore the second best number of clusters, according to the index, would provide better results for analysis.
+
+## Duda-Hart
+
+Duda-Hart is statistical test with corresponding hypothesis:
+
+* H0: homogeneity of cluster (data within cluster as similar)
+* H1: heterogeneity of cluster (one can easily split the cluster)
+
+```{r qual-duda}
+km3 <- kmeans(x = dataAllZ, centers = optKmeans) 
+dudahart2(x = dataAllZ, clustering = km3$cluster)$p.value
+```
+
+Since p.value is < 5% we reject H0 and accept H1: we can split the clusters further.
+
+## Summ up
+
+Based on the tests and statistics this clusterization is not high quality.
+
+# Analysis of final clusters
+
+## Basic analysis
+
+Based on the results presented earlier we assign each district to one of the clusters.
+
+```{r final-summary}
+finalKmeans <- kmeans(dataAllZ, optKmeans)
+dataAll$kmeans <- finalKmeans$cluster
+dataAllM <- melt(dataAll, id.vars = c("Kod", "kmeans"))
+dataAllM <- dataAllM[variable %in% names(indicators),.(mean(value)), by = .(kmeans, variable)]
+dataAllD <- dcast(dataAllM, formula = kmeans ~ variable, value.var = "V1")
+dataAllD
+```
+
+Cluster 3 is least deprived:
+
+* higher score from science test
+* lower unemployment rate
+* higher percentage of children covered by pre-school care
+* best access to pharmacies and doctors
+* lowest rate of beneficiaries of environmental social assistance 
+* smallest number of people per room/apartment
+* highest percentage of population using sewage system
+
+Higher pollution in this cluster might be associated with location of large group of districts from this cluster (Silesia).
+
+If we look at the map we can see that this cluster consists mainly of two types of districts:
+
+* cities with district rights
+* districts surrounding Warsaw or located near Silesia
+
+```{r final-map}
+res <- as.data.frame(dataAll[,.(JPT_KOD_JE = Kod, kmeans)])
+resMap <- merge(shapes_powiaty, res, by = "JPT_KOD_JE")
+resMap <- sf::st_as_sf(resMap)
+ggplot() +
+    geom_sf(data = resMap, mapping = aes(fill = as.factor(kmeans))) +
+    scale_fill_viridis_d() +
+    theme_void() +
+    labs(fill = "Cluster")
+```
+
+Cluster 2 is most deprived cluster:
+
+* lowest score from science test
+* highest unemployment
+* lowest percentage of children covered by pre-school care
+* worst access to doctors or pharmacies
+* most crowded apartments
+* highest rate of beneficiaries of environmental social assistance 
+* lowest percentage of population using sewage system
+
+If we look at the map we can see that this cluster consists mainly of two types of districts:
+
+* those located in northern Poland (with exception of surroundings of Trójmiasto)
+* those located in eastern Poland
+
+## Main questions 
+
+To remind, we started with two main questions:
+
+1. Is it true that people in big cities have better lives, better opportunities than people in so called province?
+
+2. Is it true that after so many years after Poland regained independence, the partitions are still visible (*pl - czy widać zabory*)?
+
+### Is it true that people in big cities have better lives, better opportunities than people in so called province? 
+
+```{r mq-province}
+resMap2 <- as.data.table(resMap)
+resMap2[, cityWithDistrictRights := substr(JPT_KOD_JE, 3, 3) %in% c("6", "7")]
+resMap3 <- resMap2[,.(.N, whatDis = paste0(JPT_NAZWA_, collapse = ", ")), by = .(kmeans, cityWithDistrictRights)]
+dcast(data = resMap3, formula = kmeans ~ cityWithDistrictRights, value.var = "N", fill = 0)
+```
+
+Only 4 cities with district rights is in a different cluster than the other cities with district rights (`r resMap3[cityWithDistrictRights == TRUE][N == min(N)]$whatDis`). And the cluster with almost all cities of that kind is less deprived. Which might lead to the conclusion that people in big cities have better lives/opportunities than people in so called province.
+
+### Is it true that after so many years after Poland regained independence, the partitions are still visible (pl - czy widać zabory)?
+
+Lets look at simple map that shows approximate division of Poland based on the borders of the partitions.
+
+```{r, echo=FALSE}
+alle <- shapes_powiaty$JPT_KOD_JE
+partition <- list(
+    "Prussian" = c(
+        alle[substr(alle, 1, 2) == "02"],
+        alle[substr(alle, 1, 2) == "04"],
+        alle[substr(alle, 1, 2) == "08"],
+        alle[substr(alle, 1, 2) == "16"],
+        alle[substr(alle, 1, 2) == "22"],
+        alle[substr(alle, 1, 2) == "24"],
+        alle[substr(alle, 1, 2) == "28"],
+        alle[substr(alle, 1, 2) == "30"],
+        alle[substr(alle, 1, 2) == "32"]
+        ),
+    "Russian" = c(
+        alle[substr(alle, 1, 2) == "06"],
+        alle[substr(alle, 1, 2) == "10"],
+        alle[substr(alle, 1, 2) == "14"],
+        alle[substr(alle, 1, 2) == "20"],
+        alle[substr(alle, 1, 2) == "26"]
+        ),
+    "Austrian" = c(
+        alle[substr(alle, 1, 2) == "12"],
+        alle[substr(alle, 1, 2) == "18"]
+        )
+)
+partition2 <- rbindlist(
+    l = lapply(
+        X = names(partition),
+        FUN = function(i)
+        {
+            data.table(f = i, JPT_KOD_JE = partition[[i]])
+        }
+    )
+)
+res2 <- merge(res, partition2, all.x = T, by = "JPT_KOD_JE")
+res2 <- merge(shapes_powiaty, res2, by = "JPT_KOD_JE")
+res2 <- sf::st_as_sf(res2)
+```
+
+```{r mq-annex}
+ggplot() +
+    geom_sf(data = res2, mapping = aes(fill = as.factor(kmeans))) +
+    scale_fill_viridis_d() +
+    theme_void() +
+    labs(fill = "Cluster") + facet_wrap(~f, nrow = 2)
+```
+
+The above analysis does not give grounds to conclude that the deprivation of regions is related to the partitions.
+
+# Sources
+
+Smętkowski, Maciej, Grzegorz Gorzelak, and Adam Płoszaj. "Powiaty zagrożone deprywacją: stan, trendy i prognoza." (2015).
+
+Local Data Bank, https://bdl.stat.gov.pl/bdl/start
+
+Mapa Egzaminów, https://mapa.wyniki.edu.pl/MapaEgzaminow/
